@@ -470,3 +470,224 @@ test('should calculate discount', {
 - 每个测试用例必须关联至少 1 个 AC
 - 无法关联 AC 的测试用例需要说明原因
 - 无法关联测试的 AC 需要补充测试
+
+---
+
+## 7. 测试分层策略
+
+> **核心原则：** 不测试"代码做了什么"，而测试"代码应该做什么"。测试用例必须对照 AIS 中的 Concrete Examples（具体示例）编写，而非对照 AI 自己的理解。
+
+### 7.1 测试分层架构
+
+```
+Layer 4：视觉回归测试    →  截图对比，发现"界面变了"
+Layer 3：E2E 交互测试    →  模拟用户操作流程（点击→输入→验证）
+Layer 2：组件测试        →  单个组件的渲染和行为
+Layer 1：API/接口测试    →  接口是否正常（TDD 覆盖）
+```
+
+| 层级 | 测试对象 | 必要性 | AI 参与度 | 推荐工具 |
+|------|---------|--------|---------|---------|
+| Layer 1 API 测试 | 后端接口 | 必须 | ✅ 完全自主 | pytest, Apifox |
+| Layer 2 组件测试 | 前端组件 | 应该 | ✅ 大部分自主 | Vitest + Vue Test Utils, React Testing Library |
+| Layer 3 E2E 交互测试 | 完整用户流程 | 应该 | ✅ 大部分自主 | Playwright, Cypress |
+| Layer 4 视觉回归 | 页面视觉 | 可选 | ⚠️ 需要工具辅助 | Playwright 截图, Percy, Chromatic |
+
+### 7.2 Layer 1：API/接口测试
+
+**覆盖要求：** 所有后端接口必须有对应的 API 测试。
+
+**AI 职责：** 完全自主——编写测试用例、执行测试、验证结果。
+
+**测试内容：**
+- 请求参数校验（必填、类型、范围）
+- 正常响应格式和内容
+- 错误响应格式和错误码
+- 认证和授权
+- 超时和重试机制
+
+### 7.3 Layer 2：组件测试
+
+**覆盖要求：** 核心业务组件必须有组件测试。
+
+**AI 职责：** 大部分自主——编写组件测试脚本、执行测试、验证 DOM 输出。
+
+**测试内容：**
+- 组件是否正确渲染
+- 用户交互（点击、输入、选择）是否触发正确行为
+- Props 变化时组件是否正确响应
+- 事件是否正确发射
+- 条件渲染（loading、empty、error 状态）
+
+**示例（Vue 项目）：**
+
+```javascript
+// 测试订单列表组件
+import { mount } from '@vue/test-utils'
+import OrderList from '@/components/OrderList.vue'
+
+describe('[AC-003] 订单列表组件', () => {
+  it('should render order list when orders exist', () => {
+    const wrapper = mount(OrderList, {
+      props: { orders: mockOrders }
+    })
+    expect(wrapper.findAll('.order-item')).toHaveLength(3)
+  })
+
+  it('should emit approve event when approve button clicked', async () => {
+    const wrapper = mount(OrderList, {
+      props: { orders: mockOrders }
+    })
+    await wrapper.find('.approve-btn').trigger('click')
+    expect(wrapper.emitted('approve')).toBeTruthy()
+    expect(wrapper.emitted('approve')[0][0]).toBe(mockOrders[0].id)
+  })
+
+  it('should show empty state when no orders', () => {
+    const wrapper = mount(OrderList, {
+      props: { orders: [] }
+    })
+    expect(wrapper.find('.empty-state').exists()).toBe(true)
+  })
+})
+```
+
+### 7.4 Layer 3：E2E 交互测试
+
+**覆盖要求：** 核心用户旅程必须有 E2E 测试。
+
+**AI 职责：** 大部分自主——编写操作脚本、执行自动化操作、验证 DOM 元素和网络请求。
+
+**核心认知：** AI 不能"看"界面，但可以"操作"界面 + "检查" DOM 元素 + "验证"网络请求。这三件事 AI 完全可以做。
+
+**E2E 测试用例必须包含：**
+1. 操作步骤（按用户真实操作顺序）
+2. 每步操作后的 DOM 检查点
+3. 每步操作后的网络请求检查点
+4. 异常场景的操作路径
+5. 截图节点（关键步骤自动截图）
+
+**示例（Vue 项目 + Playwright）：**
+
+```javascript
+// 测试 ERP 单据审核→推送 MES 的完整流程
+const { test, expect } = require('@playwright/test')
+
+test('[AC-005] ERP 审核推送 MES 完整流程', async ({ page }) => {
+  // Step 1: 打开订单列表页面
+  await page.goto('/orders')
+  await expect(page.locator('.order-list')).toBeVisible()
+
+  // Step 2: 点击审核按钮
+  await page.click('.order-item:first-child .approve-btn')
+  await expect(page.locator('.confirm-dialog')).toBeVisible()
+
+  // Step 3: 确认审核
+  await page.click('.confirm-dialog .confirm-btn')
+
+  // Step 4: 验证 DOM 状态变化
+  await expect(page.locator('.order-item:first-child .status')).toHaveText('已审核')
+
+  // Step 5: 验证网络请求
+  const pushRequest = await page.waitForRequest('**/api/orders/*/push-to-mes')
+  expect(pushRequest.method()).toBe('POST')
+
+  // Step 6: 验证推送结果提示
+  await expect(page.locator('.push-result')).toBeVisible()
+  await expect(page.locator('.push-result')).toHaveText(/推送成功/)
+
+  // Step 7: 关键步骤截图
+  await page.screenshot({ path: 'test-results/order-approved.png' })
+})
+```
+
+### 7.5 Layer 4：视觉回归测试
+
+**覆盖要求：** 关键页面建议有视觉回归测试。
+
+**AI 职责：** 辅助——AI 触发截图，视觉对比由工具或人工完成。
+
+**测试内容：**
+- 页面布局是否正确
+- 样式是否与设计稿一致
+- 不同屏幕尺寸下的响应式表现
+
+**工具推荐：**
+- Playwright 截图对比（AI 可触发）
+- Percy / Chromatic（自动化视觉回归平台）
+
+---
+
+## 8. 测试悖论防护
+
+### 8.1 问题描述
+
+AI 写的测试可能把 bug 编码为"正确行为"：
+
+```
+1. PRD 说：审核通过后推送单据
+2. AI 理解偏差：审核动作发生后就推送（包括驳回）
+3. AI 写的测试：test_audit_then_push() — 验证"审核后推送"，测试通过 ✅
+4. 但这个测试验证的是 AI 的错误理解，不是正确的业务逻辑
+```
+
+**测试通过了 ≠ 行为正确。** AI 写的测试倾向于验证"代码做了什么"，而不是"代码应该做什么"。
+
+### 8.2 防护规则
+
+1. **测试用例必须对照 AIS 中的 Concrete Examples 编写**，而非对照 AI 自己的理解
+2. **测试的期望值必须来自 AIS 的 I/O 契约**，而非 AI 推断的"合理值"
+3. **产品经理审核测试用例**（至少审核核心用户旅程的 E2E 测试），确认测试验证的是正确的业务逻辑
+4. **如果测试和 AIS 定义的行为不一致**，以 AIS 为准，修正测试
+5. **新增测试时，检查是否与已有测试矛盾**——如果两个测试对同一行为有不同的期望，说明存在理解偏差
+
+---
+
+## 9. 反馈毒性防护
+
+### 9.1 问题描述
+
+人类纠正 AI 时使用自然语言，自然语言本身有歧义，导致纠正可能引入新的偏差：
+
+```
+第一轮：AI 理解有偏差 → 生成错误代码
+第二轮：人类用自然语言纠正 → "这里应该是审核通过后才推送"
+第三轮：AI 基于纠正重新理解 → 但"审核通过后"还是有歧义
+第四轮：人类再次纠正 → 用了不同表述 → AI 理解又变了
+...循环往复
+```
+
+### 9.2 防护规则
+
+1. **纠正偏差时更新 AIS，而非口头描述。** 发现 AI 理解错误时，不是"告诉它哪里错了"，而是更新 AIS 中的具体条目
+2. **AIS 是结构化的，没有歧义。** 用决策表、I/O 契约、状态机等结构化格式纠正，而非自然语言
+3. **纠正记录必须同步到 AIS。** 每次纠正后，确认 AIS 已更新，避免下次出现同样的理解偏差
+4. **如果同一问题被纠正 2 次以上仍未解决**，说明 AIS 中该条目的描述不够精确，需要重写而非微调
+
+---
+
+## 10. 规格同步检查
+
+### 10.1 问题描述
+
+项目越久，代码和 AIS 的脱节越严重：
+
+```
+第 1 周：AIS 和代码完全一致
+第 2 周：改了一个 bug，代码变了，AIS 没更新
+第 3 周：又改了两个功能，AIS 更没更新
+第 4 周：AIS 已经和实际代码完全脱节
+第 5 周：新会话的 AI 基于 AIS 写代码 → 和现有代码冲突
+```
+
+### 10.2 规格同步机制
+
+1. **每次代码变更后，AI 必须检查 AIS 是否需要同步更新**
+2. **检查维度：**
+   - 新增/修改/删除的接口是否在 AIS 的 I/O 契约中反映
+   - 业务规则变更是否在 AIS 的决策表中反映
+   - 状态流转变更是否在 AIS 的状态机中反映
+   - 异常处理变更是否在 AIS 的异常处理矩阵中反映
+3. **如果代码行为和 AIS 定义不一致**，触发告警并记录到变更日志
+4. **Phase 3 步骤 10（变更与生命周期管理）中增加 AIS 同步检查项**
+5. **Gate 4.5（验收就绪预检）中增加 AIS 一致性预检**
